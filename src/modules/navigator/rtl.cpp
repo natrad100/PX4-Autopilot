@@ -735,3 +735,156 @@ float time_to_home(const matrix::Vector3f &to_home_vec,
 	float descent = fabsf(alt_change) / vehicle_descent_speed_m_s;
 	return horiz + descent;
 }
+
+void RTL::calc_and_pub_rtl_time_estimate()
+{
+	// Advertise uORB topic the first time
+	if (_rtl_time_estimate_pub == nullptr) {
+		_rtl_time_estimate_pub = orb_advertise(ORB_ID(rtl_time_estimate),
+						       &_rtl_time_estimate);
+		return;
+	}
+
+	_rtl_time_estimate.time_estimate = 0;
+	_rtl_time_estimate.safe_time_estimate = 0;
+
+	// Calculate RTL time estimate only when there is a valid home position
+	// TODO: Also check if vehicle position is valid
+	if (!_navigator->home_position_valid()) {
+		_rtl_time_estimate.valid = false;
+
+	} else {
+		_rtl_time_estimate.valid = true;
+
+		const vehicle_global_position_s &gpos = *_navigator->get_global_position();
+
+		// compute the return altitude. This takes the yuneec-cone into account
+		float return_alt;
+
+		if (_rtl_state == RTL_STATE_NONE) {
+			// While RTL is inactive, calculate the RTL altitude the same way we would
+			// if RTL was activated right here and now.
+			return_alt = get_rtl_altitude();
+
+		} else {
+			// RTL is currently active. Get return altitude directly from RTL
+			return_alt = _mission_item.altitude;
+		}
+
+		// Sum up time estimate for various segments of the landing procedure
+		switch (_rtl_state) {
+		case RTL_STATE_NONE:
+
+		// Fallthrough intented
+		case RTL_STATE_BRAKE:
+
+		// Fallthrough intented
+		case RTL_STATE_CLIMB: {
+				// Climb segment is only relevant if the drone is below return altitude
+				const float climb_dist = gpos.alt < return_alt ? (return_alt - gpos.alt) : 0;
+
+				if (climb_dist > 0) {
+					_rtl_time_estimate.time_estimate += climb_dist / _param_mpc_vel_z_auto.get();
+				}
+			}
+
+		// Fallthrough intented
+		case RTL_STATE_PRE_RETURN:
+
+		// Fallthrough intented
+		case RTL_STATE_RETURN:
+
+			// Add cruise segment to home
+			_rtl_time_estimate.time_estimate += get_distance_to_next_waypoint(
+					_return_location.lat, _return_location.lon,	gpos.lat, gpos.lon) / _param_mpc_xy_cruise.get();
+
+		// Fallthrough intented
+		case RTL_STATE_AFTER_RETURN:
+
+		// Fallthrough intented
+		case RTL_STATE_TRANSITION_TO_MC:
+
+		// Fallthrough intented
+		case RTL_STATE_DESCEND: {
+				// when descending, the target altitude is stored in the current mission item
+				float initial_altitude = 0;
+				float loiter_altitude = 0;
+
+				if (_rtl_state == RTL_STATE_DESCEND) {
+					// Take current vehicle altitude as the starting point for calculation
+					initial_altitude = gpos.alt;  // TODO: Check if this is in the right frame
+					loiter_altitude = _mission_item.altitude;  // Next waypoint = loiter
+
+
+				} else {
+					// Take the return altitude as the starting point for the calculation
+					initial_altitude = return_alt; // CLIMB and RETURN
+					loiter_altitude = math::min(_return_location.alt + _param_descend_alt.get(), return_alt);
+				}
+
+				// Add descend segment (first landing phase: return alt to loiter alt)
+				_rtl_time_estimate.time_estimate += fabsf(initial_altitude - loiter_altitude) /
+								    _param_mpc_vel_z_auto.get();
+			}
+
+		// Fallthrough intented
+		case RTL_STATE_LOITER:
+			// Add land delay (the short pause for deploying landing gear)
+			// TODO: Check if landing gear is deployed or not
+			_rtl_time_estimate.time_estimate += _param_land_delay.get();
+
+		case RTL_STATE_LAND: {
+				float initial_altitude;
+
+				// Add land segment (second landing phase) which comes after LOITER
+				if (_rtl_state == RTL_STATE_LAND) {
+					// If we are in this phase, use the current vehicle altitude  instead
+					// of the altitude paramteter to get a continous time estimate
+					initial_altitude = gpos.alt;
+
+
+				} else {
+					// If this phase is not active yet, simply use the loiter altitude,
+					// which is where the LAND phase will start
+					const float loiter_altitude = math::min(_return_location.alt + _param_descend_alt.get(), return_alt);
+					initial_altitude = loiter_altitude;
+				}
+
+				// Prevent negative times when close to the ground
+				if (initial_altitude > _return_location.alt) {
+					_rtl_time_estimate.time_estimate += (initial_altitude - _return_location.alt) / _param_mpc_land_speed.get();
+				}
+
+			}
+
+			break;
+
+		case RTL_STATE_LANDED:
+			// Remaining time is 0
+			break;
+
+		case RTL_STATE_HOME:
+			// Remaining time is 0
+			break;
+
+		default:
+			break;
+		}
+
+		// Prevent negative durations as phyiscally they make no sense. These can
+		// occur during the last phase of landing when close to the ground.
+		if (_rtl_time_estimate.time_estimate < 0) {
+			_rtl_time_estimate.time_estimate = 0;
+		}
+
+		// Use actual time estimate to compute the safer time estimate with additional
+		// scale factor and a margin
+		_rtl_time_estimate.safe_time_estimate =
+			_param_rtl_time_factor.get() * _rtl_time_estimate.time_estimate +
+			_param_rtl_time_margin.get();
+	}
+
+	// Publish message
+	_rtl_time_estimate.timestamp = hrt_absolute_time();
+	orb_publish(ORB_ID(rtl_time_estimate), _rtl_time_estimate_pub, &_rtl_time_estimate);
+}
