@@ -166,8 +166,13 @@ void BMI055_Accelerometer::RunImpl()
 			hrt_abstime timestamp_sample = now;
 
 			if (_data_ready_interrupt_enabled) {
-				// scheduled from interrupt if _drdy_fifo_read_samples was set as expected
-				if (_drdy_fifo_read_samples.fetch_and(0) != _fifo_samples) {
+				// scheduled from interrupt if _drdy_timestamp_sample was set as expected
+				const hrt_abstime drdy_timestamp_sample = _drdy_timestamp_sample.fetch_and(0);
+
+				if ((drdy_timestamp_sample != 0) && ((now - drdy_timestamp_sample) < _fifo_empty_interval_us)) {
+					timestamp_sample = drdy_timestamp_sample;
+
+				} else {
 					perf_count(_drdy_missed_perf);
 				}
 
@@ -200,7 +205,10 @@ void BMI055_Accelerometer::RunImpl()
 
 					// tolerate minor jitter, leave sample to next iteration if behind by only 1
 					if (samples == _fifo_samples + 1) {
-						timestamp_sample -= FIFO_SAMPLE_DT;
+						if (!_data_ready_interrupt_enabled) {
+							timestamp_sample -= FIFO_SAMPLE_DT;
+						}
+
 						samples--;
 					}
 
@@ -330,11 +338,8 @@ int BMI055_Accelerometer::DataReadyInterruptCallback(int irq, void *context, voi
 
 void BMI055_Accelerometer::DataReady()
 {
-	int32_t expected = 0;
-
-	if (_drdy_fifo_read_samples.compare_exchange(&expected, _fifo_samples)) {
-		ScheduleNow();
-	}
+	_drdy_timestamp_sample.store(hrt_absolute_time());
+	ScheduleNow();
 }
 
 bool BMI055_Accelerometer::DataReadyInterruptConfigure()
@@ -449,7 +454,7 @@ void BMI055_Accelerometer::FIFOReset()
 	RegisterWrite(Register::FIFO_CONFIG_1, 0);
 
 	// reset while FIFO is disabled
-	_drdy_fifo_read_samples.store(0);
+	_drdy_timestamp_sample.store(0);
 
 	// FIFO_CONFIG_0: restore FIFO watermark
 	// FIFO_CONFIG_1: re-enable FIFO

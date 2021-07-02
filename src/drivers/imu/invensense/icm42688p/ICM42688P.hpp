@@ -161,7 +161,7 @@ private:
 
 	enum REG_BANK_SEL_BIT _last_register_bank {REG_BANK_SEL_BIT::USER_BANK_0};
 
-	px4::atomic<int32_t> _drdy_fifo_read_samples{0};
+	px4::atomic<hrt_abstime> _drdy_timestamp_sample{0};
 	bool _data_ready_interrupt_enabled{false};
 
 	enum class STATE : uint8_t {

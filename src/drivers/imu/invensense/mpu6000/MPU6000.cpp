@@ -201,8 +201,13 @@ void MPU6000::RunImpl()
 			hrt_abstime timestamp_sample = now;
 
 			if (_data_ready_interrupt_enabled) {
-				// scheduled from interrupt if _drdy_fifo_read_samples was set
-				if (_drdy_fifo_read_samples.fetch_and(0) != _fifo_gyro_samples) {
+				// scheduled from interrupt if _drdy_timestamp_sample was set as expected
+				const hrt_abstime drdy_timestamp_sample = _drdy_timestamp_sample.fetch_and(0);
+
+				if ((drdy_timestamp_sample != 0) && ((now - drdy_timestamp_sample) < _fifo_empty_interval_us)) {
+					timestamp_sample = drdy_timestamp_sample;
+
+				} else {
 					perf_count(_drdy_missed_perf);
 				}
 
@@ -379,14 +384,11 @@ int MPU6000::DataReadyInterruptCallback(int irq, void *context, void *arg)
 
 void MPU6000::DataReady()
 {
-	int32_t expected = 0;
-
 	// at least the required number of samples in the FIFO
-	if (((_drdy_count.fetch_add(1) + 1) >= _fifo_gyro_samples)
-	    && _drdy_fifo_read_samples.compare_exchange(&expected, _fifo_gyro_samples)) {
-
-		ScheduleNow();
+	if ((_drdy_count.fetch_add(1) + 1) >= _fifo_gyro_samples) {
+		_drdy_timestamp_sample.store(hrt_absolute_time());
 		_drdy_count.fetch_sub(_fifo_gyro_samples);
+		ScheduleNow();
 	}
 }
 
@@ -498,7 +500,7 @@ void MPU6000::FIFOReset()
 
 	// reset while FIFO is disabled
 	_drdy_count.store(0);
-	_drdy_fifo_read_samples.store(0);
+	_drdy_timestamp_sample.store(0);
 
 	// FIFO_EN: enable both gyro and accel
 	// USER_CTRL: re-enable FIFO

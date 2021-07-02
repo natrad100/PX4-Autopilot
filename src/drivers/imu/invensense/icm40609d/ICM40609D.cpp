@@ -194,12 +194,15 @@ void ICM40609D::RunImpl()
 			uint8_t samples = 0;
 
 			if (_data_ready_interrupt_enabled) {
-				// scheduled from interrupt if _drdy_fifo_read_samples was set as expected
-				if (_drdy_fifo_read_samples.fetch_and(0) != _fifo_gyro_samples) {
-					perf_count(_drdy_missed_perf);
+				// scheduled from interrupt if _drdy_timestamp_sample was set as expected
+				const hrt_abstime drdy_timestamp_sample = _drdy_timestamp_sample.fetch_and(0);
+
+				if ((drdy_timestamp_sample != 0) && ((now - drdy_timestamp_sample) < _fifo_empty_interval_us)) {
+					timestamp_sample = drdy_timestamp_sample;
+					samples = _fifo_gyro_samples;
 
 				} else {
-					samples = _fifo_gyro_samples;
+					perf_count(_drdy_missed_perf);
 				}
 
 				// push backup schedule back
@@ -417,11 +420,8 @@ int ICM40609D::DataReadyInterruptCallback(int irq, void *context, void *arg)
 
 void ICM40609D::DataReady()
 {
-	int32_t expected = 0;
-
-	if (_drdy_fifo_read_samples.compare_exchange(&expected, _fifo_gyro_samples)) {
-		ScheduleNow();
-	}
+	_drdy_timestamp_sample.store(hrt_absolute_time());
+	ScheduleNow();
 }
 
 bool ICM40609D::DataReadyInterruptConfigure()
@@ -588,7 +588,7 @@ void ICM40609D::FIFOReset()
 	RegisterSetBits(Register::BANK_0::SIGNAL_PATH_RESET, SIGNAL_PATH_RESET_BIT::FIFO_FLUSH);
 
 	// reset while FIFO is disabled
-	_drdy_fifo_read_samples.store(0);
+	_drdy_timestamp_sample.store(0);
 }
 
 void ICM40609D::ProcessAccel(const hrt_abstime &timestamp_sample, const FIFO::DATA fifo[], const uint8_t samples)

@@ -242,12 +242,15 @@ void ICM20602::RunImpl()
 			int32_t samples = 0;
 
 			if (_data_ready_interrupt_enabled) {
-				// scheduled from interrupt if _drdy_fifo_read_samples was set as expected
-				if (_drdy_fifo_read_samples.fetch_and(0) != _fifo_gyro_samples) {
-					perf_count(_drdy_missed_perf);
+				// scheduled from interrupt if _drdy_timestamp_sample was set as expected
+				const hrt_abstime drdy_timestamp_sample = _drdy_timestamp_sample.fetch_and(0);
+
+				if ((drdy_timestamp_sample != 0) && ((now - drdy_timestamp_sample) < _fifo_empty_interval_us)) {
+					timestamp_sample = drdy_timestamp_sample;
+					samples = _fifo_gyro_samples;
 
 				} else {
-					samples = _fifo_gyro_samples;
+					perf_count(_drdy_missed_perf);
 				}
 
 				// push backup schedule back
@@ -443,11 +446,8 @@ int ICM20602::DataReadyInterruptCallback(int irq, void *context, void *arg)
 
 void ICM20602::DataReady()
 {
-	int32_t expected = 0;
-
-	if (_drdy_fifo_read_samples.compare_exchange(&expected, _fifo_gyro_samples)) {
-		ScheduleNow();
-	}
+	_drdy_timestamp_sample.store(hrt_absolute_time());
+	ScheduleNow();
 }
 
 bool ICM20602::DataReadyInterruptConfigure()
@@ -538,16 +538,14 @@ bool ICM20602::FIFORead(const hrt_abstime &timestamp_sample, uint8_t samples)
 	}
 
 	const uint16_t fifo_count_bytes = combine(buffer.FIFO_COUNTH, buffer.FIFO_COUNTL);
+	const uint8_t fifo_count_samples = fifo_count_bytes / sizeof(FIFO::DATA);
 
-	if (fifo_count_bytes >= FIFO::SIZE) {
+	if ((fifo_count_bytes >= FIFO::SIZE) || (fifo_count_samples > FIFO_MAX_SAMPLES)) {
 		perf_count(_fifo_overflow_perf);
 		FIFOReset();
 		return false;
-	}
 
-	const uint8_t fifo_count_samples = fifo_count_bytes / sizeof(FIFO::DATA);
-
-	if (fifo_count_samples == 0) {
+	} else if (fifo_count_samples == 0) {
 		perf_count(_fifo_empty_perf);
 		return false;
 	}
@@ -579,7 +577,7 @@ void ICM20602::FIFOReset()
 	RegisterSetAndClearBits(Register::USER_CTRL, USER_CTRL_BIT::FIFO_RST, USER_CTRL_BIT::FIFO_EN);
 
 	// reset while FIFO is disabled
-	_drdy_fifo_read_samples.store(0);
+	_drdy_timestamp_sample.store(0);
 
 	// FIFO_EN: enable both gyro and accel
 	// USER_CTRL: re-enable FIFO

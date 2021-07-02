@@ -143,7 +143,7 @@ private:
 	FIFO::DATA _fifo_sample_last_new_accel{};
 	uint32_t _fifo_accel_samples_count{0};
 
-	px4::atomic<int32_t> _drdy_fifo_read_samples{0};
+	px4::atomic<hrt_abstime> _drdy_timestamp_sample{0};
 	px4::atomic<int32_t> _drdy_count{0};
 	bool _data_ready_interrupt_enabled{false};
 

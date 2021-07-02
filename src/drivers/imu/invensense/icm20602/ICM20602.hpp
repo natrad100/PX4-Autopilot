@@ -143,7 +143,7 @@ private:
 	hrt_abstime _last_config_check_timestamp{0};
 	int _failure_count{0};
 
-	px4::atomic<int32_t> _drdy_fifo_read_samples{0};
+	px4::atomic<hrt_abstime> _drdy_timestamp_sample{0};
 	bool _data_ready_interrupt_enabled{false};
 
 	enum class STATE : uint8_t {

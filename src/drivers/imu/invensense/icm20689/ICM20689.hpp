@@ -141,7 +141,7 @@ private:
 	hrt_abstime _temperature_update_timestamp{0};
 	int _failure_count{0};
 
-	px4::atomic<int32_t> _drdy_fifo_read_samples{0};
+	px4::atomic<hrt_abstime> _drdy_timestamp_sample{0};
 	px4::atomic<int32_t> _drdy_count{0};
 	bool _data_ready_interrupt_enabled{false};
 
